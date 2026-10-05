@@ -4,7 +4,7 @@ Ashita v4 addon that raises Final Fantasy XI's draw distance without zone object
 
 > Check your server's rules on client modifications before using it.
 
-Same spot in West Ronfaure, both at a world draw distance of 10. With drawdistance, the hills past the trees aren't drawn and the sky shows through the gap until you walk closer. With drawcull, the whole hillside is there.
+Same spot, both at a world draw distance of 10. With drawdistance, the hills past the trees aren't drawn and the sky shows through the gap until you walk closer. With drawcull, the whole hillside is there.
 
 | drawdistance 1.2 | drawcull 1.3 |
 | --- | --- |
