@@ -1,6 +1,6 @@
 addon.name      = 'drawcull';
 addon.author    = 'relliko';
-addon.version   = '1.2';
+addon.version   = '1.3';
 addon.desc      = 'Raises the scene draw distance without zone objects popping in or dropping detail early. Replaces drawdistance.';
 
 require 'common';
@@ -30,6 +30,13 @@ local settings = require 'settings';
 *   "fld [dist2]; fcomp [obj+thr]" pair is replaced by a call to a stub that multiplies the distance by
 *   1 / lod^2 before comparing, which moves both switch points out by the lod multiplier.
 *
+*   Zone visibility lists (1.3): zones carry precomputed lists of which objects can be seen from each
+*   area. When the camera's area has one, the renderer draws only those objects, so terrain that the
+*   zone's author didn't expect to be visible is never drawn however far the draw distance goes, and it
+*   pops in when the camera moves into the next area. With "vis" on, the read of the current list
+*   ([renderer+0x3912C]) is replaced by 0, and the renderer falls back to its quadtree walk, which
+*   culls by frustum and distance only.
+*
 *   Unloading restores every patched byte. Addresses and the traced code are in
 *   research/ffxi-re/client-notes.md ("Draw distance and culling").
 --]]
@@ -38,6 +45,7 @@ local defaults = T{
     world  = 1.0,
     entity = 1.0,
     lod    = 0,         -- 0 = same as world
+    vis    = true,      -- ignore the zone's per-area visibility lists
 };
 
 -- Mesh detail compares: fld dword [esp+d]; fcomp dword [reg+0xCC or 0xC8]
@@ -54,6 +62,8 @@ local state = T{
     entity   = 0,       -- address of the entity multiplier float
     mem      = 0,       -- +0 culling stub, +32 lod factor, +48 lod stubs (24 bytes each)
     patches  = T{},     -- { addr, backup }
+    vis_site = 0,       -- mov eax, [ebp+0x3912C]
+    vis_orig = nil,
 };
 
 local function msg(s) print(chat.header(addon.name):append(chat.message(s))); end
@@ -86,8 +96,18 @@ local function lod_value()
     return math.max(l, 1.0);
 end
 
+local function apply_vis(on)
+    if (state.vis_site == 0) then return; end
+    if (on) then
+        write_bytes(state.vis_site, { 0x31, 0xC0, 0x90, 0x90, 0x90, 0x90 }); -- xor eax, eax
+    else
+        write_bytes(state.vis_site, state.vis_orig);
+    end
+end
+
 local function apply()
     if (state.world == 0 or state.settings == nil) then return; end
+    apply_vis(state.settings.vis ~= false);
     ashita.memory.write_float(state.world, state.settings.world);
     ashita.memory.write_float(state.entity, state.settings.entity);
     if (state.mem ~= 0) then
@@ -150,6 +170,17 @@ local function patch_lod()
     end
 end
 
+local function find_vis()
+    -- mov eax, [ebp+0x3912C]; lea ecx, [ebp+0x98]
+    local site = ashita.memory.find(0, 0, '8B852C9103008D8D98000000', 0, 0);
+    if (site == 0) then
+        err('Could not find the zone visibility list read; distant terrain may still pop in.');
+        return;
+    end
+    state.vis_site = site;
+    state.vis_orig = ashita.memory.read_array(site, 6);
+end
+
 ashita.events.register('load', 'load_cb', function ()
     -- fld [cfg]; ...; fmul [world] / fmul [entity] inside the client's distance scale function.
     local p = ashita.memory.find(0, 0, '8BC1487408D80D', 0, 0);
@@ -171,6 +202,7 @@ ashita.events.register('load', 'load_cb', function ()
         patch_culling();
         patch_lod();
     end
+    find_vis();
     apply();
 end);
 
@@ -185,6 +217,8 @@ ashita.events.register('unload', 'unload_cb', function ()
         write_bytes(p.addr, p.backup);
     end
     state.patches = T{};
+    apply_vis(false);
+    state.vis_site = 0;
     -- The stubs are left allocated: the render thread may be inside one while we unload.
 
     if (state.world ~= 0) then
@@ -195,13 +229,14 @@ end);
 
 local function show()
     local s = state.settings;
-    msg(('world %.2f, entity %.2f, detail %.2f%s'):fmt(s.world, s.entity, lod_value(), (s.lod == nil or s.lod <= 0) and ' (same as world)' or ''));
+    msg(('world %.2f, entity %.2f, detail %.2f%s, vis %s'):fmt(s.world, s.entity, lod_value(), (s.lod == nil or s.lod <= 0) and ' (same as world)' or '', s.vis ~= false and 'on' or 'off'));
 end
 
 local function print_help()
     msg('/drawcull world <n> - world draw distance multiplier (terrain, objects, fog). 1 = stock.');
     msg('/drawcull entity <n> - entity draw distance multiplier (players, NPCs, mobs). 1 = stock.');
     msg('/drawcull detail <n> - how much further objects keep their detailed mesh. 0 = same as world.');
+    msg('/drawcull vis <on|off> - on: draw distant terrain the zone would hide from your area (default). off: stock.');
     msg('/drawcull - shows the current values.');
 end
 
@@ -227,6 +262,8 @@ ashita.events.register('command', 'command_cb', function (e)
         state.settings.entity = n;
     elseif (#args == 3 and n ~= nil and n >= 0 and args[2]:any('detail', 'lod', 'd')) then
         state.settings.lod = n;
+    elseif (#args == 3 and args[2]:any('vis', 'v') and args[3]:any('on', 'off')) then
+        state.settings.vis = (args[3] == 'on');
     else
         print_help();
         return;
