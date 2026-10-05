@@ -1,5 +1,5 @@
 addon.name      = 'drawcull';
-addon.author    = 'relliko';
+addon.author    = 'relli';
 addon.version   = '1.3';
 addon.desc      = 'Raises the scene draw distance without zone objects popping in or dropping detail early. Replaces drawdistance.';
 
